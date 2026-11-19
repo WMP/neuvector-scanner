@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anchore/syft/syft/pkg"
+	"github.com/anchore/syft/syft/sbom"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 
@@ -527,7 +527,7 @@ func (cv *ScanTools) ScanImage(ctx context.Context, req *share.ScanImageRequest,
 		}
 	}
 
-	var syftCh <-chan []pkg.Package
+	var syftCh <-chan *sbom.SBOM
 	var syftDeadline time.Time
 	if syftEnabled(bFromRawData) {
 		syftCh, syftDeadline = startSyft(ctx, imgPath, fileMap)
@@ -666,8 +666,11 @@ func (cv *ScanTools) ScanImage(ctx context.Context, req *share.ScanImageRequest,
 	} else {
 		result.Modules = feature2Module("", nil, apps)
 	}
+	var syftDoc *sbom.SBOM
 	if syftCh != nil {
-		result.Modules = mergeSyftModules(result.Modules, waitSyft(syftCh, syftDeadline))
+		if syftDoc = waitSyft(syftCh, syftDeadline); syftDoc != nil {
+			result.Modules = mergeSyftModules(result.Modules, syftDoc.Artifacts.Packages.Sorted())
+		}
 	}
 	result.Error = serr
 	result.Vuls = vuls
@@ -785,6 +788,7 @@ func (cv *ScanTools) ScanImage(ctx context.Context, req *share.ScanImageRequest,
 	// bs, _ := json.Marshal(result)
 	// fmt.Println(string(bs[:]))
 
+	setFullSBOM(result, syftDoc, req, info.ID) // last, so the gRPC size check sees the whole result
 	return result, nil
 }
 

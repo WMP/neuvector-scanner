@@ -2,6 +2,7 @@ package cvetools
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,10 +10,13 @@ import (
 
 	"github.com/anchore/syft/syft/file"
 	"github.com/anchore/syft/syft/pkg"
+	"github.com/anchore/syft/syft/sbom"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/neuvector/neuvector/share"
+	"github.com/neuvector/neuvector/share/cluster"
+	"github.com/neuvector/neuvector/share/utils"
 )
 
 func TestSyftEnabled(t *testing.T) {
@@ -87,14 +91,14 @@ func TestBuildSyftTree(t *testing.T) {
 
 func TestWaitSyftDeadline(t *testing.T) {
 	start := time.Now()
-	assert.Nil(t, waitSyft(make(chan []pkg.Package), time.Now().Add(10*time.Millisecond)))
+	assert.Nil(t, waitSyft(make(chan *sbom.SBOM), time.Now().Add(10*time.Millisecond)))
 	assert.Less(t, time.Since(start), 2*time.Second)
 
 	// a result that is ready wins even after the deadline
 	for i := 0; i < 100; i++ {
-		ch := make(chan []pkg.Package, 1)
-		ch <- []pkg.Package{{Name: "x"}}
-		require.Len(t, waitSyft(ch, time.Now().Add(-time.Second)), 1)
+		ch := make(chan *sbom.SBOM, 1)
+		ch <- &sbom.SBOM{}
+		require.NotNil(t, waitSyft(ch, time.Now().Add(-time.Second)))
 	}
 }
 
@@ -112,10 +116,10 @@ func TestRunSyft(t *testing.T) {
 	writeFile(t, filepath.Join(root, "etc/os-release"), "ID=debian\nVERSION_ID=12\n")
 	writeFile(t, filepath.Join(root, "usr/lib/node_modules/foo/package.json"), `{"name":"foo","version":"1.2.3","license":"MIT"}`)
 
-	pkgs, err := runSyft(context.Background(), root)
+	s, err := runSyft(context.Background(), root)
 	require.NoError(t, err)
 	var deb, npm bool
-	for _, p := range pkgs {
+	for _, p := range s.Artifacts.Packages.Sorted() {
 		if p.Type == pkg.DebPkg && p.Name == "bash" {
 			deb = true
 			assert.Contains(t, p.PURL, "pkg:deb/debian/bash")
@@ -128,7 +132,7 @@ func TestRunSyft(t *testing.T) {
 	assert.True(t, npm, "npm package")
 }
 
-func TestSyftPackagesTimeout(t *testing.T) {
+func TestSyftSBOMTimeout(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "var/lib/dpkg/status"), dpkgStatus)
 
@@ -136,17 +140,80 @@ func TestSyftPackagesTimeout(t *testing.T) {
 	syftTimeout = time.Nanosecond
 	defer func() { syftTimeout = old }()
 
-	pkgs := syftPackages(context.Background(), root)
-	assert.Empty(t, pkgs)
-
-	nv := []*share.ScanModule{{Name: "a", Version: "1"}}
-	out := mergeSyftModules(nv, pkgs)
-	assert.Equal(t, nv, out)
+	assert.Nil(t, syftSBOM(context.Background(), root))
 
 	cctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := runSyft(cctx, root)
 	assert.Error(t, err)
+}
+
+func TestSetFullSBOM(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "var/lib/dpkg/status"), dpkgStatus)
+	writeFile(t, filepath.Join(root, "etc/os-release"), "ID=debian\nVERSION_ID=12\n")
+	s, err := runSyft(context.Background(), root)
+	require.NoError(t, err)
+
+	req := &share.ScanImageRequest{Repository: "library/foo", Tag: "1.0", IncludeFullSBOM: true}
+	newRes := func() *share.ScanResult { return &share.ScanResult{Digest: "sha256:abc"} }
+
+	res := newRes()
+	setFullSBOM(res, s, req, "sha256:id")
+	require.NotEmpty(t, res.FullSBOM)
+	assert.Equal(t, share.FullSBOMFormatCycloneDX, res.FullSBOMFormat)
+	assert.Equal(t, "sha256:abc", res.Digest)
+	raw := utils.GunzipBytes(res.FullSBOM)
+	assert.NotContains(t, string(raw), root)
+	var doc struct {
+		BomFormat   string `json:"bomFormat"`
+		SpecVersion string `json:"specVersion"`
+		Metadata    struct {
+			Component struct{ Type, Name, Version string }
+		}
+		Components []struct{ Name string }
+	}
+	require.NoError(t, json.Unmarshal(raw, &doc))
+	assert.Equal(t, "CycloneDX", doc.BomFormat)
+	assert.Equal(t, "1.6", doc.SpecVersion)
+	assert.Equal(t, "container", doc.Metadata.Component.Type)
+	assert.Equal(t, "library/foo", doc.Metadata.Component.Name)
+	assert.Equal(t, "sha256:abc", doc.Metadata.Component.Version)
+	var bash bool
+	for _, c := range doc.Components {
+		bash = bash || c.Name == "bash"
+	}
+	assert.True(t, bash, "bash component")
+	assert.NotEqual(t, "library/foo", s.Source.Name, "caller SBOM unchanged")
+
+	empty := func(r *share.ScanResult) {
+		assert.Empty(t, r.FullSBOM)
+		assert.Empty(t, r.FullSBOMFormat)
+	}
+
+	res = newRes()
+	setFullSBOM(res, s, &share.ScanImageRequest{Repository: "library/foo", Tag: "1.0"}, "id")
+	empty(res)
+
+	res = newRes()
+	setFullSBOM(res, nil, req, "id")
+	empty(res)
+
+	old := fullSBOMMaxSize
+	fullSBOMMaxSize = 10
+	res = newRes()
+	setFullSBOM(res, s, req, "id")
+	fullSBOMMaxSize = old
+	empty(res)
+
+	oldGrpc := cluster.GRPCMaxMsgSize
+	cluster.GRPCMaxMsgSize = grpcMsgMargin + 100
+	res = newRes()
+	res.Error = share.ScanErrorCode_ScanErrNone
+	res.Modules = []*share.ScanModule{{Name: string(make([]byte, 200))}}
+	setFullSBOM(res, s, req, "id")
+	cluster.GRPCMaxMsgSize = oldGrpc
+	empty(res)
 }
 
 func sp(name, version string, typ pkg.Type, purl string, lics ...string) pkg.Package {

@@ -14,17 +14,30 @@ import (
 	"github.com/anchore/syft/syft"
 	"github.com/anchore/syft/syft/cataloging"
 	"github.com/anchore/syft/syft/cataloging/pkgcataloging"
+	"github.com/anchore/syft/syft/format"
+	"github.com/anchore/syft/syft/format/cyclonedxjson"
 	"github.com/anchore/syft/syft/pkg"
+	"github.com/anchore/syft/syft/sbom"
+	"github.com/anchore/syft/syft/source"
 	"github.com/anchore/syft/syft/source/directorysource"
+	"github.com/golang/protobuf/proto"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/neuvector/neuvector/share"
+	"github.com/neuvector/neuvector/share/cluster"
 	scanUtils "github.com/neuvector/neuvector/share/scan"
+	"github.com/neuvector/neuvector/share/utils"
 )
 
 const syftOrigin = "syft"
 
 var syftTimeout = 300 * time.Second
+
+// fullSBOMMaxSize is the max gzip size of the full SBOM, same as controller s3store.MaxObjectSize.
+var fullSBOMMaxSize = 32 << 20
+
+// grpcMsgMargin is the room left in a gRPC message for the other fields and the framing.
+const grpcMsgMargin = 1 << 20
 
 // syftEnabled reports whether Syft runs for this scan. The env var is used because
 // the scanner forks the scannerTask process, which inherits the environment.
@@ -91,7 +104,7 @@ func buildSyftTree(ctx context.Context, fileMap map[string]string, root string) 
 	return nil
 }
 
-func runSyft(ctx context.Context, root string) ([]pkg.Package, error) {
+func runSyft(ctx context.Context, root string) (*sbom.SBOM, error) {
 	src, err := directorysource.New(directorysource.Config{Path: root, Base: root})
 	if err != nil {
 		return nil, err
@@ -110,11 +123,11 @@ func runSyft(ctx context.Context, root string) ([]pkg.Package, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.Artifacts.Packages.Sorted(), nil
+	return s, nil
 }
 
-// syftPackages runs Syft with a timeout. It returns nil on any error, so the scan is unchanged.
-func syftPackages(ctx context.Context, root string) (res []pkg.Package) {
+// syftSBOM runs Syft with a timeout. It returns nil on any error, so the scan is unchanged.
+func syftSBOM(ctx context.Context, root string) (res *sbom.SBOM) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.WithFields(log.Fields{"panic": r}).Warn("syft panicked")
@@ -124,24 +137,76 @@ func syftPackages(ctx context.Context, root string) (res []pkg.Package) {
 	ctx, cancel := context.WithTimeout(ctx, syftTimeout)
 	defer cancel()
 	start := time.Now()
-	pkgs, err := runSyft(ctx, root)
+	s, err := runSyft(ctx, root)
 	if err != nil {
 		log.WithFields(log.Fields{"error": err, "duration": time.Since(start)}).Warn("syft failed")
 		return nil
 	}
-	log.WithFields(log.Fields{"packages": len(pkgs), "duration": time.Since(start)}).Info("syft done")
-	return pkgs
+	log.WithFields(log.Fields{"packages": s.Artifacts.Packages.PackageCount(), "duration": time.Since(start)}).Info("syft done")
+	return s
+}
+
+// setFullSBOM puts the full Syft document (CycloneDX JSON, gzip) in result.
+// It never fails the scan: on any problem the fields stay empty.
+func setFullSBOM(result *share.ScanResult, s *sbom.SBOM, req *share.ScanImageRequest, imageID string) {
+	if !req.IncludeFullSBOM || s == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.WithFields(log.Fields{"panic": r}).Warn("full sbom panicked")
+			result.FullSBOM, result.FullSBOMFormat = nil, ""
+		}
+	}()
+	start := time.Now()
+	sep := ":"
+	if strings.HasPrefix(req.Tag, "sha256:") {
+		sep = "@"
+	}
+	cp := *s // shallow copy: the caller's SBOM keeps its source
+	// the directory source would expose the temp path
+	cp.Source = source.Description{
+		Name:    req.Repository,
+		Version: result.Digest,
+		Metadata: source.ImageMetadata{
+			UserInput:      req.Repository + sep + req.Tag,
+			ID:             imageID,
+			ManifestDigest: result.Digest,
+		},
+	}
+	enc, err := cyclonedxjson.NewFormatEncoderWithConfig(cyclonedxjson.DefaultEncoderConfig())
+	if err != nil {
+		log.WithFields(log.Fields{"error": err}).Warn("full sbom encoder failed")
+		return
+	}
+	doc, err := format.Encode(cp, enc)
+	if err != nil {
+		log.WithFields(log.Fields{"error": err}).Warn("full sbom encoding failed")
+		return
+	}
+	gz := utils.GzipBytes(doc)
+	if len(gz) > fullSBOMMaxSize {
+		log.WithFields(log.Fields{"size": len(gz), "max": fullSBOMMaxSize}).Warn("full sbom too big, skipped")
+		return
+	}
+	result.FullSBOM, result.FullSBOMFormat = gz, share.FullSBOMFormatCycloneDX
+	if size, limit := proto.Size(result), cluster.GRPCMaxMsgSize-grpcMsgMargin; size > limit {
+		log.WithFields(log.Fields{"size": size, "limit": limit, "sbom": len(gz)}).Warn("full sbom does not fit the gRPC message, skipped")
+		result.FullSBOM, result.FullSBOMFormat = nil, ""
+		return
+	}
+	log.WithFields(log.Fields{"gzip": len(gz), "json": len(doc), "duration": time.Since(start)}).Info("full sbom done")
 }
 
 // startSyft creates a temp dir under imgPath and runs buildSyftTree and Syft in the background.
 // The result channel is nil when Syft is skipped. Use waitSyft with the returned deadline.
-func startSyft(ctx context.Context, imgPath string, fileMap map[string]string) (<-chan []pkg.Package, time.Time) {
+func startSyft(ctx context.Context, imgPath string, fileMap map[string]string) (<-chan *sbom.SBOM, time.Time) {
 	dir, err := os.MkdirTemp(imgPath, "syft-")
 	if err != nil {
 		log.WithFields(log.Fields{"error": err}).Warn("syft skipped")
 		return nil, time.Time{}
 	}
-	ch := make(chan []pkg.Package, 1) // buffered: the goroutine never blocks, even if nobody waits
+	ch := make(chan *sbom.SBOM, 1) // buffered: the goroutine never blocks, even if nobody waits
 	start := time.Now()
 	// one budget for tree build and Syft, so the wait deadline below matches it
 	sctx, cancel := context.WithDeadline(ctx, start.Add(syftTimeout))
@@ -153,23 +218,23 @@ func startSyft(ctx context.Context, imgPath string, fileMap map[string]string) (
 			ch <- nil
 			return
 		}
-		ch <- syftPackages(sctx, dir)
+		ch <- syftSBOM(sctx, dir)
 	}()
 	return ch, start.Add(syftTimeout + 10*time.Second)
 }
 
 // waitSyft waits for the Syft result until deadline. Catalogers can ignore ctx, so the wait is bounded.
-func waitSyft(ch <-chan []pkg.Package, deadline time.Time) []pkg.Package {
+func waitSyft(ch <-chan *sbom.SBOM, deadline time.Time) *sbom.SBOM {
 	select { // a finished result wins even when the deadline has passed
-	case pkgs := <-ch:
-		return pkgs
+	case s := <-ch:
+		return s
 	default:
 	}
 	t := time.NewTimer(time.Until(deadline))
 	defer t.Stop()
 	select {
-	case pkgs := <-ch:
-		return pkgs
+	case s := <-ch:
+		return s
 	case <-t.C:
 		log.Warn("syft result not ready, skipped")
 		return nil
