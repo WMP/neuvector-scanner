@@ -200,19 +200,20 @@ func TestSetFullSBOM(t *testing.T) {
 	empty(res)
 
 	old := fullSBOMMaxSize
+	t.Cleanup(func() { fullSBOMMaxSize = old })
 	fullSBOMMaxSize = 10
 	res = newRes()
 	setFullSBOM(res, s, req, "id")
-	fullSBOMMaxSize = old
 	empty(res)
+	fullSBOMMaxSize = old // limit 2 below must not hit limit 1
 
 	oldGrpc := cluster.GRPCMaxMsgSize
+	t.Cleanup(func() { cluster.GRPCMaxMsgSize = oldGrpc })
 	cluster.GRPCMaxMsgSize = grpcMsgMargin + 100
 	res = newRes()
 	res.Error = share.ScanErrorCode_ScanErrNone
 	res.Modules = []*share.ScanModule{{Name: string(make([]byte, 200))}}
 	setFullSBOM(res, s, req, "id")
-	cluster.GRPCMaxMsgSize = oldGrpc
 	empty(res)
 }
 

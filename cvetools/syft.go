@@ -39,6 +39,10 @@ var fullSBOMMaxSize = 32 << 20
 // grpcMsgMargin is the room left in a gRPC message for the other fields and the framing.
 const grpcMsgMargin = 1 << 20
 
+// grpcDefaultMaxMsg is the controller's default gRPC limit; the controller can use it
+// even when this scanner has a larger CLUSTER_GRPC_MAX_MSG_SIZE_MB.
+const grpcDefaultMaxMsg = 64 << 20
+
 // syftEnabled reports whether Syft runs for this scan. The env var is used because
 // the scanner forks the scannerTask process, which inherits the environment.
 // SCANNER_DISABLE_SYFT takes the values of strconv.ParseBool; an invalid value keeps Syft on.
@@ -159,9 +163,11 @@ func setFullSBOM(result *share.ScanResult, s *sbom.SBOM, req *share.ScanImageReq
 		}
 	}()
 	start := time.Now()
-	sep := ":"
+	ref := req.Repository
 	if strings.HasPrefix(req.Tag, "sha256:") {
-		sep = "@"
+		ref += "@" + req.Tag
+	} else if req.Tag != "" {
+		ref += ":" + req.Tag
 	}
 	cp := *s // shallow copy: the caller's SBOM keeps its source
 	// the directory source would expose the temp path
@@ -169,12 +175,14 @@ func setFullSBOM(result *share.ScanResult, s *sbom.SBOM, req *share.ScanImageReq
 		Name:    req.Repository,
 		Version: result.Digest,
 		Metadata: source.ImageMetadata{
-			UserInput:      req.Repository + sep + req.Tag,
+			UserInput:      ref,
 			ID:             imageID,
 			ManifestDigest: result.Digest,
 		},
 	}
-	enc, err := cyclonedxjson.NewFormatEncoderWithConfig(cyclonedxjson.DefaultEncoderConfig())
+	cfg := cyclonedxjson.DefaultEncoderConfig()
+	cfg.Version = "1.6" // fixed spec version (D4), not the Syft default
+	enc, err := cyclonedxjson.NewFormatEncoderWithConfig(cfg)
 	if err != nil {
 		log.WithFields(log.Fields{"error": err}).Warn("full sbom encoder failed")
 		return
@@ -190,7 +198,7 @@ func setFullSBOM(result *share.ScanResult, s *sbom.SBOM, req *share.ScanImageReq
 		return
 	}
 	result.FullSBOM, result.FullSBOMFormat = gz, share.FullSBOMFormatCycloneDX
-	if size, limit := proto.Size(result), cluster.GRPCMaxMsgSize-grpcMsgMargin; size > limit {
+	if size, limit := proto.Size(result), min(cluster.GRPCMaxMsgSize, grpcDefaultMaxMsg)-grpcMsgMargin; size > limit {
 		log.WithFields(log.Fields{"size": size, "limit": limit, "sbom": len(gz)}).Warn("full sbom does not fit the gRPC message, skipped")
 		result.FullSBOM, result.FullSBOMFormat = nil, ""
 		return

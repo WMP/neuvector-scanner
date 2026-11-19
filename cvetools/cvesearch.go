@@ -670,6 +670,9 @@ func (cv *ScanTools) ScanImage(ctx context.Context, req *share.ScanImageRequest,
 	if syftCh != nil {
 		if syftDoc = waitSyft(syftCh, syftDeadline); syftDoc != nil {
 			result.Modules = mergeSyftModules(result.Modules, syftDoc.Artifacts.Packages.Sorted())
+			if !req.IncludeFullSBOM {
+				syftDoc = nil // free the document early, only the packages are needed
+			}
 		}
 	}
 	result.Error = serr
