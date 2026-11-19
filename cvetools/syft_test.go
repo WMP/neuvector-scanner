@@ -149,19 +149,19 @@ func TestSyftSBOMTimeout(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestSetFullSBOM(t *testing.T) {
+func TestFullSBOM(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "var/lib/dpkg/status"), dpkgStatus)
 	writeFile(t, filepath.Join(root, "etc/os-release"), "ID=debian\nVERSION_ID=12\n")
 	s, err := runSyft(context.Background(), root)
 	require.NoError(t, err)
 
-	req := &share.ScanImageRequest{Repository: "library/foo", Tag: "1.0", IncludeFullSBOM: true}
-	newRes := func() *share.ScanResult { return &share.ScanResult{Digest: "sha256:abc"} }
-
-	res := newRes()
-	setFullSBOM(res, s, req, "sha256:id")
-	require.NotEmpty(t, res.FullSBOM)
+	req := &share.ScanImageRequest{Registry: "https://registry.example.com/", Repository: "library/foo", Tag: "1.0", IncludeFullSBOM: true}
+	gz := encodeFullSBOM(s, req, "sha256:abc", "sha256:id")
+	require.NotEmpty(t, gz)
+	res := &share.ScanResult{Digest: "sha256:abc"}
+	setFullSBOM(res, gz)
+	assert.Equal(t, gz, res.FullSBOM)
 	assert.Equal(t, share.FullSBOMFormatCycloneDX, res.FullSBOMFormat)
 	assert.Equal(t, "sha256:abc", res.Digest)
 	raw := utils.GunzipBytes(res.FullSBOM)
@@ -178,47 +178,52 @@ func TestSetFullSBOM(t *testing.T) {
 	assert.Equal(t, "CycloneDX", doc.BomFormat)
 	assert.Equal(t, "1.6", doc.SpecVersion)
 	assert.Equal(t, "container", doc.Metadata.Component.Type)
-	assert.Equal(t, "library/foo", doc.Metadata.Component.Name)
+	assert.Equal(t, "registry.example.com/library/foo", doc.Metadata.Component.Name)
 	assert.Equal(t, "sha256:abc", doc.Metadata.Component.Version)
 	var bash bool
 	for _, c := range doc.Components {
 		bash = bash || c.Name == "bash"
 	}
 	assert.True(t, bash, "bash component")
-	assert.NotEqual(t, "library/foo", s.Source.Name, "caller SBOM unchanged")
+	assert.NotEqual(t, "registry.example.com/library/foo", s.Source.Name, "caller SBOM unchanged")
 
 	empty := func(r *share.ScanResult) {
 		assert.Empty(t, r.FullSBOM)
 		assert.Empty(t, r.FullSBOMFormat)
 	}
 
-	res = newRes()
-	setFullSBOM(res, s, &share.ScanImageRequest{Repository: "library/foo", Tag: "1.0"}, "id")
+	// no flag: no encoding
+	assert.Nil(t, encodeFullSBOM(s, &share.ScanImageRequest{Repository: "library/foo"}, "sha256:abc", "id"))
+
+	// no syft result (disabled or failed)
+	assert.Nil(t, encodeFullSBOM(nil, req, "sha256:abc", "id"))
+	res = &share.ScanResult{}
+	setFullSBOM(res, nil)
 	empty(res)
 
-	res = newRes()
-	setFullSBOM(res, nil, req, "id")
-	empty(res)
-
+	// limit 1: gzip size
 	old := fullSBOMMaxSize
 	t.Cleanup(func() { fullSBOMMaxSize = old })
 	fullSBOMMaxSize = 10
-	res = newRes()
-	setFullSBOM(res, s, req, "id")
-	empty(res)
-	fullSBOMMaxSize = old // limit 2 below must not hit limit 1
+	assert.Nil(t, encodeFullSBOM(s, req, "sha256:abc", "id"))
+	fullSBOMMaxSize = old
 
+	// limit 2: the result alone fits; only the SBOM makes it too big
 	oldGrpc := cluster.GRPCMaxMsgSize
 	t.Cleanup(func() { cluster.GRPCMaxMsgSize = oldGrpc })
-	res = newRes()
-	res.Modules = []*share.ScanModule{{Name: string(make([]byte, 200))}}
-	// the result alone fits; only the SBOM makes it too big
+	res = &share.ScanResult{Modules: []*share.ScanModule{{Name: string(make([]byte, 200))}}}
 	cluster.GRPCMaxMsgSize = grpcMsgMargin + proto.Size(res) + 10
-	setFullSBOM(res, s, req, "id")
+	setFullSBOM(res, gz)
 	empty(res)
-	cluster.GRPCMaxMsgSize = grpcMsgMargin + proto.Size(res) + 10*len(raw)
-	setFullSBOM(res, s, req, "id")
+	cluster.GRPCMaxMsgSize = grpcMsgMargin + proto.Size(res) + 10*len(gz)
+	setFullSBOM(res, gz)
 	assert.NotEmpty(t, res.FullSBOM, "fits under a larger limit")
+
+	// a larger scanner limit does not lift the controller default (64 MiB)
+	cluster.GRPCMaxMsgSize = 1 << 30
+	res = &share.ScanResult{Modules: []*share.ScanModule{{Name: string(make([]byte, grpcDefaultMaxMsg-grpcMsgMargin))}}}
+	setFullSBOM(res, gz)
+	empty(res)
 }
 
 func sp(name, version string, typ pkg.Type, purl string, lics ...string) pkg.Package {

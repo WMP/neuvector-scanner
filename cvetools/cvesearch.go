@@ -670,11 +670,10 @@ func (cv *ScanTools) ScanImage(ctx context.Context, req *share.ScanImageRequest,
 	if syftCh != nil {
 		if syftDoc = waitSyft(syftCh, syftDeadline); syftDoc != nil {
 			result.Modules = mergeSyftModules(result.Modules, syftDoc.Artifacts.Packages.Sorted())
-			if !req.IncludeFullSBOM {
-				syftDoc = nil // free the document early, only the packages are needed
-			}
 		}
 	}
+	// encode now, so the Syft document is not kept during the layer scans
+	fullSBOM := encodeFullSBOM(syftDoc, req, result.Digest, info.ID)
 	result.Error = serr
 	result.Vuls = vuls
 	result.Author = info.Author
@@ -791,7 +790,7 @@ func (cv *ScanTools) ScanImage(ctx context.Context, req *share.ScanImageRequest,
 	// bs, _ := json.Marshal(result)
 	// fmt.Println(string(bs[:]))
 
-	setFullSBOM(result, syftDoc, req, info.ID) // last, so the gRPC size check sees the whole result
+	setFullSBOM(result, fullSBOM) // last, so the gRPC size check sees the whole result
 	return result, nil
 }
 

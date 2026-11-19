@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -150,24 +151,29 @@ func syftSBOM(ctx context.Context, root string) (res *sbom.SBOM) {
 	return s
 }
 
-// setFullSBOM puts the full Syft document (CycloneDX JSON, gzip) in result.
-// It never fails the scan: on any problem the fields stay empty.
-func setFullSBOM(result *share.ScanResult, s *sbom.SBOM, req *share.ScanImageRequest, imageID string) {
+// encodeFullSBOM returns the full Syft document as gzipped CycloneDX JSON when the request asks
+// for it, or nil (also on any problem).
+// Call it right after Syft, so the document can be freed before the layer scans.
+func encodeFullSBOM(s *sbom.SBOM, req *share.ScanImageRequest, digest, imageID string) (gz []byte) {
 	if !req.IncludeFullSBOM {
-		return
+		return nil
 	}
 	if s == nil {
-		log.Info("full sbom skipped: no syft result")
-		return
+		log.Warn("full sbom skipped: no syft result")
+		return nil
 	}
 	defer func() {
 		if r := recover(); r != nil {
 			log.WithFields(log.Fields{"panic": r}).Warn("full sbom panicked")
-			result.FullSBOM, result.FullSBOMFormat = nil, ""
+			gz = nil
 		}
 	}()
 	start := time.Now()
-	ref := req.Repository
+	name := req.Repository
+	if u, err := url.Parse(req.Registry); err == nil && u.Host != "" {
+		name = u.Host + "/" + name
+	}
+	ref := name
 	if strings.HasPrefix(req.Tag, "sha256:") {
 		ref += "@" + req.Tag
 	} else if req.Tag != "" {
@@ -176,12 +182,12 @@ func setFullSBOM(result *share.ScanResult, s *sbom.SBOM, req *share.ScanImageReq
 	cp := *s // shallow copy: the caller's SBOM keeps its source
 	// the directory source would expose the temp path
 	cp.Source = source.Description{
-		Name:    req.Repository,
-		Version: result.Digest,
+		Name:    name,
+		Version: digest,
 		Metadata: source.ImageMetadata{
 			UserInput:      ref,
 			ID:             imageID,
-			ManifestDigest: result.Digest,
+			ManifestDigest: digest,
 		},
 	}
 	cfg := cyclonedxjson.DefaultEncoderConfig()
@@ -189,25 +195,32 @@ func setFullSBOM(result *share.ScanResult, s *sbom.SBOM, req *share.ScanImageReq
 	enc, err := cyclonedxjson.NewFormatEncoderWithConfig(cfg)
 	if err != nil {
 		log.WithFields(log.Fields{"error": err}).Warn("full sbom encoder failed")
-		return
+		return nil
 	}
 	doc, err := format.Encode(cp, enc)
 	if err != nil {
 		log.WithFields(log.Fields{"error": err}).Warn("full sbom encoding failed")
-		return
+		return nil
 	}
-	gz := utils.GzipBytes(doc)
+	gz = utils.GzipBytes(doc)
 	if len(gz) > fullSBOMMaxSize {
 		log.WithFields(log.Fields{"size": len(gz), "max": fullSBOMMaxSize}).Warn("full sbom too big, skipped")
+		return nil
+	}
+	log.WithFields(log.Fields{"gzip": len(gz), "json": len(doc), "duration": time.Since(start)}).Info("full sbom encoded")
+	return gz
+}
+
+// setFullSBOM puts gz in result when the whole result fits the gRPC message. Call it last.
+func setFullSBOM(result *share.ScanResult, gz []byte) {
+	if gz == nil {
 		return
 	}
 	result.FullSBOM, result.FullSBOMFormat = gz, share.FullSBOMFormatCycloneDX
 	if size, limit := proto.Size(result), min(cluster.GRPCMaxMsgSize, grpcDefaultMaxMsg)-grpcMsgMargin; size > limit {
 		log.WithFields(log.Fields{"size": size, "limit": limit, "sbom": len(gz)}).Warn("full sbom does not fit the gRPC message, skipped")
 		result.FullSBOM, result.FullSBOMFormat = nil, ""
-		return
 	}
-	log.WithFields(log.Fields{"gzip": len(gz), "json": len(doc), "duration": time.Since(start)}).Info("full sbom done")
 }
 
 // startSyft creates a temp dir under imgPath and runs buildSyftTree and Syft in the background.
