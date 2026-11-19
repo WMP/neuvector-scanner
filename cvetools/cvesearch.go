@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anchore/syft/syft/pkg"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 
@@ -526,6 +527,11 @@ func (cv *ScanTools) ScanImage(ctx context.Context, req *share.ScanImageRequest,
 		}
 	}
 
+	var syftCh <-chan []pkg.Package
+	if syftEnabled(bFromRawData) {
+		syftCh = startSyft(ctx, imgPath, fileMap)
+	}
+
 	// parallel scanning: cve and secrets
 	done := make(chan bool, 1)
 	if req.ScanSecrets {
@@ -658,6 +664,9 @@ func (cv *ScanTools) ScanImage(ctx context.Context, req *share.ScanImageRequest,
 		result.Modules = feature2Module(namespace.Name, features, apps)
 	} else {
 		result.Modules = feature2Module("", nil, apps)
+	}
+	if syftCh != nil {
+		result.Modules = mergeSyftModules(result.Modules, <-syftCh)
 	}
 	result.Error = serr
 	result.Vuls = vuls
