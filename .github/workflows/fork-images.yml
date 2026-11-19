@@ -1,0 +1,52 @@
+name: Fork test images
+# Fork only: builds linux/amd64 test images to ghcr.io. Remove this commit before a PR to upstream.
+on:
+  push:
+    branches-ignore: [main, master]
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    # Never run in the upstream repository.
+    if: github.repository_owner != 'neuvector'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install crane
+        uses: ./.github/actions/install-crane
+      - name: Install cosign
+        uses: ./.github/actions/install-cosign
+      - name: Download vulnerability database
+        # The fork has no Git LFS object for data/cvedb. Use the signed upstream DB artifact (public).
+        env:
+          OCI_REPOSITORY_PREFIX: ghcr.io/neuvector/vul
+          COSIGN_CERTIFICATE_IDENTITY: https://github.com/neuvector/release/.github/workflows/build-vuldbgen.yaml@refs/heads/master
+        run: |
+          set -euo pipefail
+          VULNDB_VERSION=$(grep '^ARG VULNDB_VERSION=' package/Dockerfile | cut -d= -f2)
+          bash scripts/ghcr-vulndb-artifact.sh download cvedb cvedb.regular data/cvedb.regular "${VULNDB_VERSION}"
+      - name: Build and push
+        env:
+          COMPONENT: scanner
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::7}"
+          # Docker tag: [A-Za-z0-9_.-], max 128 chars.
+          tag="$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-120 | sed 's/^[.-]/_/')-${short_sha}"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/neuvector-${COMPONENT}:${tag}"
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -f "package/Dockerfile" \
+            --build-arg VERSION="$tag" --build-arg COMMIT="$short_sha" \
+            -t "$image" .
+          docker push "$image"
+          echo "Pushed \`$image\`" >> "$GITHUB_STEP_SUMMARY"
