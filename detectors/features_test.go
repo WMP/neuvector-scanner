@@ -51,3 +51,12 @@ func TestAPKPurlName(t *testing.T) {
 	assert.Equal(t, "2.7.5-r0", got["libressl"].Version.String())
 	assert.Equal(t, "", got["musl"].PurlName)
 }
+
+func TestAPKPurlNameOriginBinaryLater(t *testing.T) {
+	db := "P:libssl3\nV:3.1.4-r0\no:openssl\n\n" + "P:openssl\nV:3.1.4-r0\no:openssl\n\n"
+	fvs, err := detectAPK("alpine:3.19", map[string]*FeatureFile{"lib/apk/db/installed": {Data: []byte(db)}}, "")
+	require.NoError(t, err)
+	require.Len(t, fvs, 1)
+	assert.Equal(t, "openssl", fvs[0].Package)
+	assert.Equal(t, "", fvs[0].PurlName)
+}

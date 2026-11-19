@@ -49,7 +49,7 @@ func TestBuildSyftTree(t *testing.T) {
 		"/rel":            filepath.Join(layer, "rel"),
 		"/../../evil-out": filepath.Join(layer, "evil"),
 	}
-	require.NoError(t, buildSyftTree(fm, root))
+	require.NoError(t, buildSyftTree(context.Background(), fm, root))
 
 	fi1, _ := os.Stat(filepath.Join(layer, "a/b/file.txt"))
 	fi2, err := os.Stat(filepath.Join(root, "a/b/file.txt"))
@@ -69,11 +69,11 @@ func TestBuildSyftTree(t *testing.T) {
 	_, err = os.Lstat(filepath.Join(filepath.Dir(base), "evil-out"))
 	assert.True(t, os.IsNotExist(err))
 
-	assert.Error(t, buildSyftTree(fm, filepath.Join(base, "missing")))
+	assert.Error(t, buildSyftTree(context.Background(), fm, filepath.Join(base, "missing")))
 
 	// no link created: error
-	assert.Error(t, buildSyftTree(map[string]string{"/x": filepath.Join(layer, "nope")}, root))
-	assert.Error(t, buildSyftTree(nil, root))
+	assert.Error(t, buildSyftTree(context.Background(), map[string]string{"/x": filepath.Join(layer, "nope")}, root))
+	assert.Error(t, buildSyftTree(context.Background(), nil, root))
 
 	img := t.TempDir()
 	ch, deadline := startSyft(context.Background(), img, nil)
@@ -89,6 +89,13 @@ func TestWaitSyftDeadline(t *testing.T) {
 	start := time.Now()
 	assert.Nil(t, waitSyft(make(chan []pkg.Package), time.Now().Add(10*time.Millisecond)))
 	assert.Less(t, time.Since(start), 2*time.Second)
+
+	// a result that is ready wins even after the deadline
+	for i := 0; i < 100; i++ {
+		ch := make(chan []pkg.Package, 1)
+		ch <- []pkg.Package{{Name: "x"}}
+		require.Len(t, waitSyft(ch, time.Now().Add(-time.Second)), 1)
+	}
 }
 
 const dpkgStatus = `Package: bash

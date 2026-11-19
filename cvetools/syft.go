@@ -47,13 +47,16 @@ func syftEnabled(fromRawData bool) bool {
 
 // buildSyftTree creates directories and hard links only. Symlinks are never created,
 // because Syft could follow them out of root.
-func buildSyftTree(fileMap map[string]string, root string) error {
+func buildSyftTree(ctx context.Context, fileMap map[string]string, root string) error {
 	root = filepath.Clean(root)
 	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
 		return fmt.Errorf("invalid syft root %q: %v", root, err)
 	}
 	var dirs, links, skipped, errs int
 	for in, real := range fileMap {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		dst := filepath.Join(root, in)
 		if dst != root && !strings.HasPrefix(dst, root+string(filepath.Separator)) {
 			errs++
@@ -139,20 +142,29 @@ func startSyft(ctx context.Context, imgPath string, fileMap map[string]string) (
 		return nil, time.Time{}
 	}
 	ch := make(chan []pkg.Package, 1) // buffered: the goroutine never blocks, even if nobody waits
+	start := time.Now()
+	// one budget for tree build and Syft, so the wait deadline below matches it
+	sctx, cancel := context.WithDeadline(ctx, start.Add(syftTimeout))
 	go func() {
+		defer cancel()
 		defer os.RemoveAll(dir)
-		if err := buildSyftTree(fileMap, dir); err != nil {
+		if err := buildSyftTree(sctx, fileMap, dir); err != nil {
 			log.WithFields(log.Fields{"error": err}).Warn("syft skipped")
 			ch <- nil
 			return
 		}
-		ch <- syftPackages(ctx, dir)
+		ch <- syftPackages(sctx, dir)
 	}()
-	return ch, time.Now().Add(syftTimeout + 10*time.Second)
+	return ch, start.Add(syftTimeout + 10*time.Second)
 }
 
 // waitSyft waits for the Syft result until deadline. Catalogers can ignore ctx, so the wait is bounded.
 func waitSyft(ch <-chan []pkg.Package, deadline time.Time) []pkg.Package {
+	select { // a finished result wins even when the deadline has passed
+	case pkgs := <-ch:
+		return pkgs
+	default:
+	}
 	t := time.NewTimer(time.Until(deadline))
 	defer t.Stop()
 	select {
@@ -166,6 +178,8 @@ func waitSyft(ch <-chan []pkg.Package, deadline time.Time) []pkg.Package {
 
 // javaFiles returns the unique in-image paths of a Syft package. AccessPath only: nested jars
 // keep RealPath = outer jar and AccessPath = "outer:inner", like NeuVector's File.
+// shortcut: NV File keeps only the outer jar and the innermost entry while Syft chains every level,
+// so jars nested 2+ levels deep do not match by file; upgrade with the share/scan jar source change.
 func javaFiles(p pkg.Package) []string {
 	var out []string
 	for _, l := range p.Locations.ToSlice() {
