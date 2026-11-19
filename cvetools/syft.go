@@ -29,7 +29,7 @@ var syftTimeout = 300 * time.Second
 // the scanner forks the scannerTask process, which inherits the environment.
 func syftEnabled(fromRawData bool) bool {
 	if !fromRawData {
-		log.Info("syft skipped: layer cacher is enabled")
+		log.Debug("syft skipped: layer cacher is enabled")
 		return false
 	}
 	if v, err := strconv.ParseBool(os.Getenv("SCANNER_DISABLE_SYFT")); err == nil && v {
@@ -75,6 +75,9 @@ func buildSyftTree(fileMap map[string]string, root string) error {
 		}
 	}
 	log.WithFields(log.Fields{"dirs": dirs, "links": links, "skipped": skipped, "errors": errs}).Info("syft tree")
+	if links == 0 {
+		return fmt.Errorf("no files linked")
+	}
 	return nil
 }
 
@@ -101,7 +104,13 @@ func runSyft(ctx context.Context, root string) ([]pkg.Package, error) {
 }
 
 // syftPackages runs Syft with a timeout. It returns nil on any error, so the scan is unchanged.
-func syftPackages(ctx context.Context, root string) []pkg.Package {
+func syftPackages(ctx context.Context, root string) (res []pkg.Package) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.WithFields(log.Fields{"panic": r}).Warn("syft panicked")
+			res = nil
+		}
+	}()
 	ctx, cancel := context.WithTimeout(ctx, syftTimeout)
 	defer cancel()
 	start := time.Now()
@@ -163,13 +172,31 @@ outer:
 	return list
 }
 
+// apkNamespace returns the namespace of an apk purl merge key "apk/<ns>/<name>@<ver>".
+func apkNamespace(key string) (string, bool) {
+	parts := strings.SplitN(key, "/", 3)
+	if len(parts) == 3 && parts[0] == "apk" {
+		return parts[1], true
+	}
+	return "", false
+}
+
 // mergeSyftModules adds Syft licenses to matching NeuVector modules and appends
 // Syft-only packages. CVE matching is not changed.
 func mergeSyftModules(modules []*share.ScanModule, pkgs []pkg.Package) []*share.ScanModule {
 	nv := make(map[string][]*share.ScanModule)
+	apkOrigin := make(map[string][]*share.ScanModule) // NV folds apk subpackages into the origin module
+	jarFile := make(map[string][]*share.ScanModule)   // jar modules without Purl, by file+version
 	for _, m := range modules {
 		if k := scanUtils.PurlMergeKey(m.Purl); k != "" {
 			nv[k] = append(nv[k], m)
+			if ns, ok := apkNamespace(k); ok {
+				ak := "apk/" + ns + "/" + strings.ToLower(m.Name) + "@" + m.Version
+				apkOrigin[ak] = append(apkOrigin[ak], m)
+			}
+		} else if m.Source == "jar" && m.Purl == "" {
+			fk := "/" + m.File + "@" + m.Version
+			jarFile[fk] = append(jarFile[fk], m)
 		}
 	}
 	added := make(map[string]*share.ScanModule)
@@ -181,7 +208,30 @@ func mergeSyftModules(modules []*share.ScanModule, pkgs []pkg.Package) []*share.
 			continue
 		}
 		lics := syftLicenses(p)
-		if ms, ok := nv[key]; ok {
+		ms, ok := nv[key]
+		if !ok {
+			if e, isApk := p.Metadata.(pkg.ApkDBEntry); isApk && e.OriginPackage != "" {
+				if ns, ok2 := apkNamespace(key); ok2 {
+					ms, ok = apkOrigin["apk/"+ns+"/"+strings.ToLower(e.OriginPackage)+"@"+p.Version]
+					ok = ok && len(ms) > 0
+				}
+			}
+		}
+		if !ok && p.Type == pkg.JavaPkg {
+			for _, l := range p.Locations.ToSlice() {
+				for _, f := range []string{l.RealPath, l.AccessPath} {
+					if jm := jarFile[f+"@"+p.Version]; len(jm) > 0 {
+						for _, m := range jm {
+							m.Purl = p.PURL
+						}
+						ms, ok = jm, true
+						nv[key] = append(nv[key], jm...) // same jar at another path merges by key
+						delete(jarFile, f+"@"+p.Version)
+					}
+				}
+			}
+		}
+		if ok {
 			matched++
 			for _, m := range ms { // NV module wins; its Purl is set, it gave the key
 				m.Licenses = appendUnique(m.Licenses, lics...)

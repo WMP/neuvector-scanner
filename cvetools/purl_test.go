@@ -25,6 +25,7 @@ func TestFeature2ModulePurlOS(t *testing.T) {
 	apk := feature2Module("alpine:3.8", []detectors.FeatureVersion{
 		{Package: "libressl", Version: v2, PurlName: "libressl2.7-libcrypto"},
 	}, nil)
+	require.Len(t, apk, 1)
 	assert.Equal(t, "libressl", apk[0].Name)
 	assert.Equal(t, "2.7.5-r0", apk[0].Version)
 	assert.Equal(t, "apk/alpine/libressl2.7-libcrypto@2.7.5-r0", scan.PurlMergeKey(apk[0].Purl))
