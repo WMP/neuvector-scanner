@@ -2503,6 +2503,72 @@ paths:
           description: Success
           schema:
             $ref: "#/definitions/RESTResponseRulesData"
+  /v1/sbom/s3:
+    get:
+      tags:
+        - Scan
+      summary: Get SBOM S3 storage configuration
+      description: Requires the global sbom read permission. The secret key is never returned.
+      security:
+        - ApiKeyAuth: []
+        - TokenAuth: []
+      produces:
+        - application/json
+      responses:
+        "200":
+          description: Success
+          schema:
+            $ref: "#/definitions/RESTSBOMStorageData"
+        "403":
+          description: The global sbom permission is missing
+        "500":
+          description: Failed to read the configuration
+    patch:
+      tags:
+        - Scan
+      summary: Configure SBOM S3 storage
+      description: Requires the global sbom write permission. Fields that are not set keep their value. An empty access_key and secret_key select the default AWS credential chain. The secret_key is required when the endpoint changes and a secret is stored.
+      security:
+        - ApiKeyAuth: []
+        - TokenAuth: []
+      consumes:
+        - application/json
+      parameters:
+        - in: body
+          name: body
+          description: SBOM S3 storage configuration
+          required: true
+          schema:
+            $ref: "#/definitions/RESTSBOMStorageConfigData"
+      responses:
+        "200":
+          description: Success
+        "400":
+          description: Invalid configuration
+        "403":
+          description: The global sbom permission is missing
+        "500":
+          description: Failed to write the configuration
+  /v1/sbom/s3/images:
+    get:
+      tags:
+        - Scan
+      summary: List registry images with a full SBOM in S3 storage
+      description: Requires the sbom permission. Only images that the user can access are listed. The list is empty when the S3 storage is disabled.
+      security:
+        - ApiKeyAuth: []
+        - TokenAuth: []
+      produces:
+        - application/json
+      responses:
+        "200":
+          description: Success
+          schema:
+            $ref: "#/definitions/RESTSBOMStorageImagesData"
+        "403":
+          description: The sbom permission is missing
+        "500":
+          description: Failed to list the S3 storage
   /v1/scan/scanner:
     get:
       tags:
@@ -2613,6 +2679,44 @@ paths:
       responses:
         "200":
           description: Success
+  /v1/scan/host/{id}/sbom:
+    get:
+      tags:
+        - Scan
+      summary: Get host SBOM
+      description: Download the software bill of materials (SBOM). Requires the sbom permission.
+      security:
+        - ApiKeyAuth: []
+        - TokenAuth: []
+      produces:
+        - application/vnd.cyclonedx+json
+        - application/spdx+json
+      parameters:
+        - in: path
+          name: id
+          description: Host ID
+          required: true
+          type: string
+        - in: query
+          name: format
+          description: SBOM format
+          required: false
+          type: string
+          enum:
+            - cyclonedx
+            - spdx
+          default: cyclonedx
+      responses:
+        "200":
+          description: Success. The content type is application/vnd.cyclonedx+json (CycloneDX 1.6 JSON) or application/spdx+json (SPDX 2.3 JSON).
+          schema:
+            type: object
+        "400":
+          description: Unsupported format
+        "403":
+          description: The sbom permission is missing
+        "404":
+          description: Object not found or not scanned
   /v1/scan/image:
     get:
       tags:
@@ -2649,6 +2753,44 @@ paths:
           description: Success
           schema:
             $ref: "#/definitions/RESTScanReportData"
+  /v1/scan/image/{id}/sbom:
+    get:
+      tags:
+        - Scan
+      summary: Get SBOM by workload's image ID
+      description: Download the software bill of materials (SBOM). Requires the sbom permission. The SBOM is built from the image scan when the user can access one, otherwise from the runtime scan of a workload that runs the image. With format=cyclonedx the stored full document is returned when it exists in the SBOM S3 storage.
+      security:
+        - ApiKeyAuth: []
+        - TokenAuth: []
+      produces:
+        - application/vnd.cyclonedx+json
+        - application/spdx+json
+      parameters:
+        - in: path
+          name: id
+          description: Image id
+          required: true
+          type: string
+        - in: query
+          name: format
+          description: SBOM format
+          required: false
+          type: string
+          enum:
+            - cyclonedx
+            - spdx
+          default: cyclonedx
+      responses:
+        "200":
+          description: Success. The content type is application/vnd.cyclonedx+json (CycloneDX 1.6 JSON) or application/spdx+json (SPDX 2.3 JSON).
+          schema:
+            type: object
+        "400":
+          description: Unsupported format
+        "403":
+          description: The sbom permission is missing
+        "404":
+          description: Object not found or not scanned
   /v1/scan/platform:
     get:
       tags:
@@ -2885,6 +3027,49 @@ paths:
           description: Success
           schema:
             $ref: "#/definitions/RESTScanReportData"
+  /v1/scan/registry/{name}/image/{id}/sbom:
+    get:
+      tags:
+        - Scan
+      summary: Get registry image SBOM
+      description: Download the software bill of materials (SBOM). Requires the sbom permission. With format=cyclonedx the stored full document is returned when it exists in the SBOM S3 storage.
+      security:
+        - ApiKeyAuth: []
+        - TokenAuth: []
+      produces:
+        - application/vnd.cyclonedx+json
+        - application/spdx+json
+      parameters:
+        - in: path
+          name: name
+          description: Name of the registry
+          required: true
+          type: string
+        - in: path
+          name: id
+          description: Image ID
+          required: true
+          type: string
+        - in: query
+          name: format
+          description: SBOM format
+          required: false
+          type: string
+          enum:
+            - cyclonedx
+            - spdx
+          default: cyclonedx
+      responses:
+        "200":
+          description: Success. The content type is application/vnd.cyclonedx+json (CycloneDX 1.6 JSON) or application/spdx+json (SPDX 2.3 JSON).
+          schema:
+            type: object
+        "400":
+          description: Unsupported format
+        "403":
+          description: The sbom permission is missing
+        "404":
+          description: Object not found or not scanned
   /v1/scan/registry/{name}/layers/{id}:
     get:
       tags:
@@ -3064,6 +3249,44 @@ paths:
       responses:
         "200":
           description: Success
+  /v1/scan/workload/{id}/sbom:
+    get:
+      tags:
+        - Scan
+      summary: Get container SBOM
+      description: Download the software bill of materials (SBOM). Requires the sbom permission.
+      security:
+        - ApiKeyAuth: []
+        - TokenAuth: []
+      produces:
+        - application/vnd.cyclonedx+json
+        - application/spdx+json
+      parameters:
+        - in: path
+          name: id
+          description: Workload ID
+          required: true
+          type: string
+        - in: query
+          name: format
+          description: SBOM format
+          required: false
+          type: string
+          enum:
+            - cyclonedx
+            - spdx
+          default: cyclonedx
+      responses:
+        "200":
+          description: Success. The content type is application/vnd.cyclonedx+json (CycloneDX 1.6 JSON) or application/spdx+json (SPDX 2.3 JSON).
+          schema:
+            type: object
+        "400":
+          description: Unsupported format
+        "403":
+          description: The sbom permission is missing
+        "404":
+          description: Object not found or not scanned
   /v1/scan/workloads/scan_report:
     post:
       tags:
@@ -9391,6 +9614,107 @@ definitions:
         type: string
         format: date-time
         example: 2018-06-20T19:00:53Z
+  RESTSBOMStorage:
+    type: object
+    properties:
+      enabled:
+        type: boolean
+      endpoint:
+        type: string
+      region:
+        type: string
+      bucket:
+        type: string
+      prefix:
+        type: string
+      path_style:
+        type: boolean
+      access_key:
+        type: string
+      secret_key_set:
+        type: boolean
+      delete_unused:
+        type: boolean
+      delete_grace_period:
+        type: integer
+        format: uint32
+        description: Minutes
+  RESTSBOMStorageData:
+    type: object
+    required:
+      - config
+    properties:
+      config:
+        $ref: "#/definitions/RESTSBOMStorage"
+  RESTSBOMStorageConfig:
+    type: object
+    properties:
+      enabled:
+        type: boolean
+      endpoint:
+        type: string
+      region:
+        type: string
+      bucket:
+        type: string
+      prefix:
+        type: string
+        description: Objects are stored as <prefix>/<cluster name>/images/<digest>.cdx.json.gz. Use a unique prefix per cluster when clusters share a bucket. After a cluster rename (also at federation join) the old objects are no longer used or deleted. An object is served only to the registry image whose scan wrote it; when two registries have the same digest, the last scan wins and the other image gets the inventory document.
+      path_style:
+        type: boolean
+      access_key:
+        type: string
+      secret_key:
+        type: string
+      delete_unused:
+        type: boolean
+        description: Deletes objects whose image digest is in no workload and no registry of this cluster for longer than delete_grace_period. Use a bucket or prefix that no other cluster writes to; clusters with the same name and prefix would delete each other's objects.
+      delete_grace_period:
+        type: integer
+        format: uint32
+        description: Minutes
+  RESTSBOMStorageConfigData:
+    type: object
+    required:
+      - config
+    properties:
+      config:
+        $ref: "#/definitions/RESTSBOMStorageConfig"
+  RESTSBOMStorageImage:
+    type: object
+    required:
+      - registry
+      - image_id
+      - digest
+      - images
+      - size
+      - last_modified
+    properties:
+      registry:
+        type: string
+      image_id:
+        type: string
+      digest:
+        type: string
+      images:
+        type: array
+        items:
+          type: string
+      size:
+        type: integer
+        format: int64
+      last_modified:
+        type: string
+        format: date-time
+  RESTSBOMStorageImagesData:
+    type: object
+    required:
+      - images
+    properties:
+      images:
+        type: array
+        items:
+          $ref: "#/definitions/RESTSBOMStorageImage"
   RESTScanConfig:
     type: object
     required:

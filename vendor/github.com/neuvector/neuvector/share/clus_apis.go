@@ -843,6 +843,33 @@ type CLUSSystemConfig struct {
 	EnableTLSVerification      bool                      `json:"enable_tls_verification"`
 	GlobalCaCerts              []string                  `json:"cacerts"`
 	AllowNsUserExportNetPolicy bool                      `json:"allow_ns_user_export_net_policy,omitempty"`
+	SBOMStorage                CLUSSBOMStorage           `json:"sbom_s3"`
+}
+
+// FullSBOMFormatCycloneDX is the value of ScanResult.FullSBOMFormat.
+const FullSBOMFormatCycloneDX = "cyclonedx-json"
+
+// CLUSSBOMStorage is the S3 storage of full SBOM documents. Empty keys = default AWS credential chain (IRSA, instance role).
+type CLUSSBOMStorage struct {
+	Enabled      bool   `json:"enabled"`
+	Endpoint     string `json:"endpoint"` // "" = AWS endpoint of the region
+	Region       string `json:"region"`   // "" = us-east-1
+	Bucket       string `json:"bucket"`
+	Prefix       string `json:"prefix"`
+	PathStyle    bool   `json:"path_style"`
+	AccessKey    string `json:"access_key"`
+	SecretKey    string `json:"secret_key,cloak"`
+	DeleteUnused bool   `json:"delete_unused"`
+	DeleteGrace  uint32 `json:"delete_grace_period"` // minutes; 0 = default 1440
+}
+
+// Format masks the secret. It is not a fmt.Stringer on purpose: the cloak marshaller skips Stringer values.
+func (c CLUSSBOMStorage) Format(f fmt.State, verb rune) {
+	if c.SecretKey != "" {
+		c.SecretKey = "*****"
+	}
+	type plain CLUSSBOMStorage
+	fmt.Fprintf(f, "%+v", plain(c))
 }
 
 type CLUSSystemConfigEncMigrated struct {

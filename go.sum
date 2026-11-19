@@ -240,6 +240,8 @@ github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2
 github.com/BurntSushi/xgb v0.0.0-20160522181843-27f122750802/go.mod h1:IVnqGOEym/WlBOVXweHU+Q+/VP0lqqI8lqeDx9IjBqo=
 github.com/CycloneDX/cyclonedx-go v0.10.0 h1:7xyklU7YD+CUyGzSFIARG18NYLsKVn4QFg04qSsu+7Y=
 github.com/CycloneDX/cyclonedx-go v0.10.0/go.mod h1:vUvbCXQsEm48OI6oOlanxstwNByXjCZ2wuleUlwGEO8=
+github.com/CycloneDX/cyclonedx-go v0.12.0 h1:/7Jum36UA6V043tQZ/fE3jf+Nf9gn/qxUFfd7QReMy8=
+github.com/CycloneDX/cyclonedx-go v0.12.0/go.mod h1:V2577HhxDDCDLYfkm55WJrz16nHTfyQZwcWUBSG7Z28=
 github.com/DATA-DOG/go-sqlmock v1.5.2/go.mod h1:88MAG/4G7SMwSE3CeA0ZKzrT5CiOU3OJ+JlNzwDqpNU=
 github.com/DataDog/datadog-go v3.2.0+incompatible/go.mod h1:LButxg5PwREeZtORoXG3tL4fMGNddJ+vMq1mwgfaqoQ=
 github.com/DataDog/zstd v1.5.5 h1:oWf5W7GtOLgp6bciQYDmhHHjdhYkALu6S/5Ni9ZgSvQ=
@@ -285,6 +287,8 @@ github.com/ThalesIgnite/crypto11 v1.2.5/go.mod h1:ILDKtnCKiQ7zRoNxcp36Y1ZR8LBPmR
 github.com/VividCortex/ewma v1.2.0/go.mod h1:nz4BbCtbLyFDeC9SUHbtcT5644juEuWfUAUnGx7j5l4=
 github.com/WMP/neuvector-neuvector v0.0.0-20261119181710-3a8b8792ee72 h1:FCZCu43vLVDW8QxEMdcc0f5NPKmk5zbCc0QlhY1ri9M=
 github.com/WMP/neuvector-neuvector v0.0.0-20261119181710-3a8b8792ee72/go.mod h1:a9yTVwY7kkpoV5msZ19RuUtnXqcM3QZYIdwpRcliCwc=
+github.com/WMP/neuvector-neuvector v0.0.0-20261119220907-84ebcea44eb3 h1:vHvCg/G9QQNsXqN+fMNAyW5B2S1Sw5h6Zr/ononczFw=
+github.com/WMP/neuvector-neuvector v0.0.0-20261119220907-84ebcea44eb3/go.mod h1:F/DEf+vP75G0Gh05mTTHi5qjHgjTKA7BHydRqGND/zo=
 github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d/go.mod h1:asat636LX7Bqt5lYEZ27JNDcqxfjdBQuJ/MM4CN/Lzo=
 github.com/acobaugh/osrelease v0.1.0 h1:Yb59HQDGGNhCj4suHaFQQfBps5wyoKLSSX/J/+UifRE=
 github.com/acobaugh/osrelease v0.1.0/go.mod h1:4bFEs0MtgHNHBrmHCt67gNisnabCRAlzdVasCEGHTWY=

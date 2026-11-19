@@ -44,6 +44,7 @@ const (
 	PERM_CLOUD                 = 0x00040000 // for cloud services like aws lambda
 	PERM_WORKLOAD_BASIC        = 0x00080000 // workload(pod). namespaced
 	PERM_VULNERABILITY         = 0x00100000 // for vulnerability profile
+	PERM_SBOM                  = 0x00200000 // read: SBOM download and component search; write: SBOM integrations (Dependency-Track). namespaced
 
 	// composite permissions (~= permanent boost)
 	PERMS_RUNTIME_SCAN     = PERM_RUNTIME_SCAN_BASIC | PERM_WORKLOAD_BASIC | PERM_INFRA_BASIC
@@ -67,9 +68,9 @@ const (
 
 	// Effective permissions for domain admin/reader roles. Even for the reserved admin/reader roles assigned to domain, they cannot access controller/enforcer objects(PERM_NV_RESOURCE)
 	PERMS_DOMAIN_READ = PERM_RUNTIME_SCAN_BASIC | PERM_REG_SCAN | PERM_NETWORK_POLICY_BASIC | PERM_SYSTEM_POLICY_BASIC | PERM_GROUP_BASIC | PERM_WORKLOAD_BASIC | PERM_INFRA_BASIC |
-		PERM_COMPLIANCE_BASIC | PERM_AUTHORIZATION | PERM_SYSTEM_CONFIG | PERM_AUDIT_EVENTS | PERM_SECURITY_EVENTS_BASIC | PERM_EVENTS // all read permissions a domain admin could have eventually
+		PERM_COMPLIANCE_BASIC | PERM_AUTHORIZATION | PERM_SYSTEM_CONFIG | PERM_AUDIT_EVENTS | PERM_SECURITY_EVENTS_BASIC | PERM_EVENTS | PERM_SBOM // all read permissions a domain admin could have eventually
 	PERMS_DOMAIN_WRITE = PERM_RUNTIME_SCAN_BASIC | PERM_REG_SCAN | PERM_NETWORK_POLICY_BASIC | PERM_SYSTEM_POLICY_BASIC | PERM_GROUP_BASIC | PERM_WORKLOAD_BASIC | PERM_INFRA_BASIC |
-		PERM_COMPLIANCE_BASIC | PERM_AUTHORIZATION // all write permissions a domain admin could have eventually
+		PERM_COMPLIANCE_BASIC | PERM_AUTHORIZATION | PERM_SBOM // all write permissions a domain admin could have eventually
 	PERMS_DOMAIN = PERMS_DOMAIN_READ | PERMS_DOMAIN_WRITE // sum of all permissions that are supporedt in domain
 
 	// customer-configurable permissions: (PERM_NV_RESOURCE is non-customer-configurable permission)
@@ -107,6 +108,7 @@ const ( // permission option id, id that ends with "_basic" is used by controlle
 	PERM_SECURITY_EVENTS_BASIC_ID = "security_events_basic"
 	PERM_WORKLOAD_BASIC_ID        = "workload_basic"
 	PERM_VULNERABILITY_ID         = "vulnerability"
+	PERM_SBOM_ID                  = "sbom"
 
 	// complex permissions, can be seen by customers
 	PERMS_RUNTIME_SCAN_ID     = "rt_scan"         // == PERM_RUNTIME_SCAN_BASIC | PERM_WORKLOAD_BASIC | PERM_INFRA_BASIC

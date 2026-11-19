@@ -154,6 +154,8 @@ message ScanResult {
     string Created = 26;
     ScanTypeMap ScanTypesRequested = 27;
     OSScanStatus OSScanStatus = 28;
+    bytes FullSBOM = 29;       // gzip; set only when ScanImageRequest.IncludeFullSBOM is true
+    string FullSBOMFormat = 30; // "cyclonedx-json"
 }
 
 message ScanSignatureInfo {

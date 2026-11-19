@@ -56,6 +56,12 @@ func (b *BOM) convert(specVersion SpecVersion) {
 		b.Declarations = nil
 		b.Definitions = nil
 	}
+	if specVersion < SpecVersion1_7 {
+		b.Citations = nil
+		if b.Definitions != nil {
+			b.Definitions.Patents = nil
+		}
+	}
 
 	if b.Dependencies != nil && specVersion < SpecVersion1_6 {
 		for i := range *b.Dependencies {
@@ -74,6 +80,10 @@ func (b *BOM) convert(specVersion SpecVersion) {
 
 		if specVersion < SpecVersion1_6 {
 			b.Metadata.Manufacturer = nil
+		}
+
+		if specVersion < SpecVersion1_7 {
+			b.Metadata.DistributionConstraints = nil
 		}
 
 		recurseComponent(b.Metadata.Component, componentConverter(specVersion))
@@ -166,6 +176,13 @@ func componentConverter(specVersion SpecVersion) func(*Component) {
 			c.Manufacturer = nil
 			c.Authors = nil
 			c.Tags = nil
+			c.CryptoProperties = nil
+		}
+
+		if specVersion < SpecVersion1_7 {
+			c.IsExternal = nil
+			c.PatentAssertions = nil
+			c.VersionRange = ""
 		}
 
 		if !specVersion.supportsComponentType(c.Type) {
@@ -177,6 +194,7 @@ func componentConverter(specVersion SpecVersion) func(*Component) {
 		convertLicenses(c.Licenses, specVersion)
 		convertEvidence(c, specVersion)
 		convertModelCard(c, specVersion)
+		convertCryptoProperties(c.CryptoProperties, specVersion)
 
 		if !specVersion.supportsScope(c.Scope) {
 			c.Scope = ""
@@ -202,12 +220,20 @@ func convertEvidence(c *Component, specVersion SpecVersion) {
 	}
 
 	if specVersion < SpecVersion1_6 {
-		// Spec version 1.5 uses only one Identity.
+		// Spec version 1.5 defines identity as a single object, not an array.
 		// cf. https://cyclonedx.org/docs/1.5/json/#components_items_evidence_identity
-		if c.Evidence.Identity != nil {
-			ids := *c.Evidence.Identity
-			ids = ids[:1]
-			c.Evidence.Identity = &ids
+		if c.Evidence.Identity != nil && c.Evidence.Identity.Identities != nil {
+			ids := *c.Evidence.Identity.Identities
+			if len(ids) > 0 {
+				first := ids[0]
+				c.Evidence.Identity = &EvidenceIdentityChoice{Identity: &first}
+			} else {
+				c.Evidence.Identity = nil
+			}
+		}
+		if c.Evidence.Identity != nil && c.Evidence.Identity.Identity != nil {
+			// concludedValue was introduced in 1.6.
+			c.Evidence.Identity.Identity.ConcludedValue = ""
 		}
 		if c.Evidence.Occurrences != nil {
 			for i := range *c.Evidence.Occurrences {
@@ -231,8 +257,30 @@ func convertCompositions(comps *[]Composition, specVersion SpecVersion) {
 
 	for i := range *comps {
 		comp := &(*comps)[i]
+		if specVersion < SpecVersion1_5 {
+			comp.BOMRef = ""
+			comp.Vulnerabilities = nil
+		}
 		if !specVersion.supportsCompositionAggregate(comp.Aggregate) {
 			comp.Aggregate = CompositionAggregateUnknown
+		}
+	}
+}
+
+// convertDataClassifications modifies a DataClassification slice such that it adheres to a given SpecVersion.
+func convertDataClassifications(dataClassifications *[]DataClassification, specVersion SpecVersion) {
+	if dataClassifications == nil {
+		return
+	}
+
+	// v1.6 introduced Name, Description, Governance, Source, and Destination fields
+	if specVersion < SpecVersion1_6 {
+		for i := range *dataClassifications {
+			(*dataClassifications)[i].Name = ""
+			(*dataClassifications)[i].Description = ""
+			(*dataClassifications)[i].Governance = nil
+			(*dataClassifications)[i].Source = nil
+			(*dataClassifications)[i].Destination = nil
 		}
 	}
 }
@@ -252,6 +300,10 @@ func convertExternalReferences(extRefs *[]ExternalReference, specVersion SpecVer
 
 		if specVersion < SpecVersion1_3 {
 			extRef.Hashes = nil
+		}
+
+		if specVersion < SpecVersion1_7 {
+			extRef.Properties = nil
 		}
 	}
 }
@@ -345,6 +397,15 @@ func convertLicenses(licenses *Licenses, specVersion SpecVersion) {
 			}
 		}
 	}
+
+	if specVersion < SpecVersion1_7 {
+		for i := range *licenses {
+			choice := &(*licenses)[i]
+			choice.ExpressionDetails = nil
+			choice.Licensing = nil
+			choice.Properties = nil
+		}
+	}
 }
 
 func convertOrganizationalEntity(org *OrganizationalEntity, specVersion SpecVersion) {
@@ -389,6 +450,65 @@ func convertModelCard(c *Component, specVersion SpecVersion) {
 	}
 }
 
+func convertCryptoProperties(cp *CryptoProperties, specVersion SpecVersion) {
+	if cp == nil {
+		return
+	}
+
+	if cp.AlgorithmProperties != nil {
+		if specVersion < SpecVersion1_7 {
+			cp.AlgorithmProperties.AlgorithmFamily = ""
+			cp.AlgorithmProperties.EllipticCurve = ""
+		}
+		if !specVersion.supportsCryptoPrimitive(cp.AlgorithmProperties.Primitive) {
+			cp.AlgorithmProperties.Primitive = ""
+		}
+	}
+
+	if cp.ProtocolProperties != nil && !specVersion.supportsCryptoProtocolType(cp.ProtocolProperties.Type) {
+		cp.ProtocolProperties.Type = ""
+	}
+
+	if cp.CertificateProperties != nil {
+		if specVersion < SpecVersion1_7 {
+			cp.CertificateProperties.SerialNumber = ""
+			cp.CertificateProperties.CertificateFileExtension = ""
+			cp.CertificateProperties.Fingerprint = nil
+			cp.CertificateProperties.CertificateState = nil
+			cp.CertificateProperties.CertificateExtensions = nil
+			cp.CertificateProperties.RelatedCryptographicAssets = nil
+			cp.CertificateProperties.CreationDate = ""
+			cp.CertificateProperties.ActivationDate = ""
+			cp.CertificateProperties.DeactivationDate = ""
+			cp.CertificateProperties.RevocationDate = ""
+			cp.CertificateProperties.DestructionDate = ""
+		}
+	}
+
+	if cp.RelatedCryptoMaterialProperties != nil {
+		if specVersion < SpecVersion1_7 {
+			cp.RelatedCryptoMaterialProperties.Fingerprint = nil
+			cp.RelatedCryptoMaterialProperties.RelatedCryptographicAssets = nil
+		}
+	}
+
+	if cp.ProtocolProperties != nil {
+		if specVersion < SpecVersion1_7 {
+			cp.ProtocolProperties.RelatedCryptographicAssets = nil
+		}
+
+		if cp.ProtocolProperties.CipherSuites != nil {
+			for i := range *cp.ProtocolProperties.CipherSuites {
+				cs := &(*cp.ProtocolProperties.CipherSuites)[i]
+				if specVersion < SpecVersion1_7 {
+					cs.TLSGroups = nil
+					cs.TLSSignatureSchemes = nil
+				}
+			}
+		}
+	}
+}
+
 func convertVulnerabilities(vulns *[]Vulnerability, specVersion SpecVersion) {
 	if vulns == nil {
 		return
@@ -403,6 +523,10 @@ func convertVulnerabilities(vulns *[]Vulnerability, specVersion SpecVersion) {
 			vuln.ProofOfConcept = nil
 			vuln.Rejected = ""
 			vuln.Workaround = ""
+			if vuln.Analysis != nil {
+				vuln.Analysis.FirstIssued = ""
+				vuln.Analysis.LastUpdated = ""
+			}
 		}
 
 		if specVersion < SpecVersion1_6 {
@@ -464,6 +588,14 @@ func serviceConverter(specVersion SpecVersion) func(*Service) {
 
 		if specVersion < SpecVersion1_5 {
 			s.TrustZone = ""
+		}
+
+		if specVersion < SpecVersion1_6 {
+			convertDataClassifications(s.Data, specVersion)
+		}
+
+		if specVersion < SpecVersion1_7 {
+			s.PatentAssertions = nil
 		}
 
 		convertOrganizationalEntity(s.Provider, specVersion)
@@ -663,9 +795,29 @@ func (sv SpecVersion) supportsExternalReferenceType(ert ExternalReferenceType) b
 		ERTypeThreatModel,
 		ERTypeVulnerabilityAssertion:
 		return sv >= SpecVersion1_5
+	case ERTypePatent, ERTypePatentFamily, ERTypePatentAssertion, ERTypeCitation:
+		return sv >= SpecVersion1_7
 	}
 
 	return sv >= SpecVersion1_1
+}
+
+func (sv SpecVersion) supportsCryptoPrimitive(primitive CryptoPrimitive) bool {
+	switch primitive {
+	case CryptoPrimitiveKeyWrap:
+		return sv >= SpecVersion1_7
+	}
+	return sv >= SpecVersion1_6
+}
+
+func (sv SpecVersion) supportsCryptoProtocolType(pt CryptoProtocolType) bool {
+	switch pt {
+	case CryptoProtocolTypeDTLS, CryptoProtocolTypeQUIC,
+		CryptoProtocolTypeEAPAKA, CryptoProtocolTypeEAPAKAPrime,
+		CryptoProtocolTypePRINS, CryptoProtocolType5GAKA:
+		return sv >= SpecVersion1_7
+	}
+	return sv >= SpecVersion1_6
 }
 
 func (sv SpecVersion) supportsHashAlgorithm(algo HashAlgorithm) bool {
@@ -674,6 +826,8 @@ func (sv SpecVersion) supportsHashAlgorithm(algo HashAlgorithm) bool {
 		return sv >= SpecVersion1_0
 	case HashAlgoSHA3_384, HashAlgoBlake2b_256, HashAlgoBlake2b_384, HashAlgoBlake2b_512, HashAlgoBlake3:
 		return sv >= SpecVersion1_2
+	case HashAlgoStreebog256, HashAlgoStreebog512:
+		return sv >= SpecVersion1_7
 	}
 
 	return false

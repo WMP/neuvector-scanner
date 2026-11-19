@@ -4433,3 +4433,50 @@ func (h *RESTHost) GetScanData() RESTAssetScanData {
 		HostName: h.Name,
 	}
 }
+
+type RESTSBOMStorage struct {
+	Enabled      bool   `json:"enabled"`
+	Endpoint     string `json:"endpoint"`
+	Region       string `json:"region"`
+	Bucket       string `json:"bucket"`
+	Prefix       string `json:"prefix"`
+	PathStyle    bool   `json:"path_style"`
+	AccessKey    string `json:"access_key"`
+	SecretKeySet bool   `json:"secret_key_set"`
+	DeleteUnused bool   `json:"delete_unused"`
+	DeleteGrace  uint32 `json:"delete_grace_period"` // minutes
+}
+
+type RESTSBOMStorageData struct {
+	Config *RESTSBOMStorage `json:"config"`
+}
+
+type RESTSBOMStorageConfig struct {
+	Enabled      *bool   `json:"enabled"`
+	Endpoint     *string `json:"endpoint"`
+	Region       *string `json:"region"`
+	Bucket       *string `json:"bucket"`
+	Prefix       *string `json:"prefix"`
+	PathStyle    *bool   `json:"path_style"`
+	AccessKey    *string `json:"access_key"`
+	SecretKey    *string `json:"secret_key,omitempty,cloak"`
+	DeleteUnused *bool   `json:"delete_unused"`
+	DeleteGrace  *uint32 `json:"delete_grace_period"`
+}
+
+type RESTSBOMStorageConfigData struct {
+	Config *RESTSBOMStorageConfig `json:"config"`
+}
+
+type RESTSBOMStorageImage struct {
+	Registry     string   `json:"registry"`
+	ImageID      string   `json:"image_id"`
+	Digest       string   `json:"digest"`
+	Images       []string `json:"images"`
+	Size         int64    `json:"size"`
+	LastModified string   `json:"last_modified"`
+}
+
+type RESTSBOMStorageImagesData struct {
+	Images []*RESTSBOMStorageImage `json:"images"`
+}

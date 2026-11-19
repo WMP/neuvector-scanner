@@ -18,6 +18,7 @@ message ScanImageRequest {
     repeated SigstoreRootOfTrust RootsOfTrust  = 10;
     string Token = 11;
     ScanTypeMap ScanTypesRequested = 12;
+    bool IncludeFullSBOM = 13;
 }
 
 message SigstoreRootOfTrust {
