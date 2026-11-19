@@ -96,6 +96,9 @@ message ScanModule  {
     repeated ScanModuleVul Vuls = 4;
     repeated string CPEs = 5;
     string File = 6;
+    string Purl = 7;
+    repeated string Licenses = 8;
+    string Origin = 9;
 }
 
 message ScanModuleVul  {
