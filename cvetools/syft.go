@@ -153,7 +153,11 @@ func syftSBOM(ctx context.Context, root string) (res *sbom.SBOM) {
 // setFullSBOM puts the full Syft document (CycloneDX JSON, gzip) in result.
 // It never fails the scan: on any problem the fields stay empty.
 func setFullSBOM(result *share.ScanResult, s *sbom.SBOM, req *share.ScanImageRequest, imageID string) {
-	if !req.IncludeFullSBOM || s == nil {
+	if !req.IncludeFullSBOM {
+		return
+	}
+	if s == nil {
+		log.Info("full sbom skipped: no syft result")
 		return
 	}
 	defer func() {

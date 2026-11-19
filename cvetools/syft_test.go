@@ -11,6 +11,7 @@ import (
 	"github.com/anchore/syft/syft/file"
 	"github.com/anchore/syft/syft/pkg"
 	"github.com/anchore/syft/syft/sbom"
+	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -209,12 +210,15 @@ func TestSetFullSBOM(t *testing.T) {
 
 	oldGrpc := cluster.GRPCMaxMsgSize
 	t.Cleanup(func() { cluster.GRPCMaxMsgSize = oldGrpc })
-	cluster.GRPCMaxMsgSize = grpcMsgMargin + 100
 	res = newRes()
-	res.Error = share.ScanErrorCode_ScanErrNone
 	res.Modules = []*share.ScanModule{{Name: string(make([]byte, 200))}}
+	// the result alone fits; only the SBOM makes it too big
+	cluster.GRPCMaxMsgSize = grpcMsgMargin + proto.Size(res) + 10
 	setFullSBOM(res, s, req, "id")
 	empty(res)
+	cluster.GRPCMaxMsgSize = grpcMsgMargin + proto.Size(res) + 10*len(raw)
+	setFullSBOM(res, s, req, "id")
+	assert.NotEmpty(t, res.FullSBOM, "fits under a larger limit")
 }
 
 func sp(name, version string, typ pkg.Type, purl string, lics ...string) pkg.Package {
