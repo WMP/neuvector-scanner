@@ -21,6 +21,8 @@ func TestSyftEnabled(t *testing.T) {
 	assert.False(t, syftEnabled(false))
 	t.Setenv("SCANNER_DISABLE_SYFT", "true")
 	assert.False(t, syftEnabled(true))
+	t.Setenv("SCANNER_DISABLE_SYFT", "bogus")
+	assert.True(t, syftEnabled(true))
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -74,10 +76,19 @@ func TestBuildSyftTree(t *testing.T) {
 	assert.Error(t, buildSyftTree(nil, root))
 
 	img := t.TempDir()
-	assert.Nil(t, startSyft(context.Background(), img, nil))
-	entries, err := os.ReadDir(img)
-	require.NoError(t, err)
-	assert.Empty(t, entries)
+	ch, deadline := startSyft(context.Background(), img, nil)
+	require.NotNil(t, ch)
+	assert.Nil(t, waitSyft(ch, deadline))
+	assert.Eventually(t, func() bool {
+		entries, err := os.ReadDir(img)
+		return err == nil && len(entries) == 0
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestWaitSyftDeadline(t *testing.T) {
+	start := time.Now()
+	assert.Nil(t, waitSyft(make(chan []pkg.Package), time.Now().Add(10*time.Millisecond)))
+	assert.Less(t, time.Since(start), 2*time.Second)
 }
 
 const dpkgStatus = `Package: bash
@@ -141,18 +152,21 @@ func sp(name, version string, typ pkg.Type, purl string, lics ...string) pkg.Pac
 
 func TestMergeSyftModules(t *testing.T) {
 	vul := &share.ScanVulnerability{Name: "CVE-2021-44228"}
-	cases := []struct{ name, nvPurl, syftPurl string }{
-		{"jar", "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1", "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1"},
-		{"jar qualifier", "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1", "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1?type=jar"},
-		{"python", "pkg:pypi/foo-bar@1.0", "pkg:pypi/Foo_Bar@1.0"},
-		{"go", "pkg:golang/github.com/x/y@v1.2.3", "pkg:golang/github.com/x/y@v1.2.3"},
-		{"deb", "pkg:deb/debian/bash@5.2.15-2%2Bb13?distro=debian-12", "pkg:deb/debian/bash@5.2.15-2+b13?arch=amd64&distro=debian-12"},
-		{"apk", "pkg:apk/alpine/libressl2.7-libcrypto@2.7.5-r0?distro=alpine-3.8", "pkg:apk/alpine/libressl2.7-libcrypto@2.7.5-r0?arch=x86_64&upstream=libressl&distro=alpine-3.8"},
+	cases := []struct {
+		name, nvPurl, syftPurl string
+		typ                    pkg.Type
+	}{
+		{"jar", "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1", "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1", pkg.JavaPkg},
+		{"jar qualifier", "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1", "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1?type=jar", pkg.JavaPkg},
+		{"python", "pkg:pypi/foo-bar@1.0", "pkg:pypi/Foo_Bar@1.0", pkg.PythonPkg},
+		{"go", "pkg:golang/github.com/x/y@v1.2.3", "pkg:golang/github.com/x/y@v1.2.3", pkg.GoModulePkg},
+		{"deb", "pkg:deb/debian/bash@5.2.15-2%2Bb13?distro=debian-12", "pkg:deb/debian/bash@5.2.15-2+b13?arch=amd64&distro=debian-12", pkg.DebPkg},
+		{"apk", "pkg:apk/alpine/libressl2.7-libcrypto@2.7.5-r0?distro=alpine-3.8", "pkg:apk/alpine/libressl2.7-libcrypto@2.7.5-r0?arch=x86_64&upstream=libressl&distro=alpine-3.8", pkg.ApkPkg},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			nv := &share.ScanModule{Name: "nvname", Version: "nvver", Source: "nvsrc", Purl: c.nvPurl, Vuls: []*share.ScanModuleVul{{Name: vul.Name}}, Licenses: []string{"MIT"}}
-			p := sp("syftname", "syftver", pkg.JavaPkg, c.syftPurl, "MIT", "Apache-2.0")
+			p := sp("syftname", "syftver", c.typ, c.syftPurl, "MIT", "Apache-2.0")
 			out := mergeSyftModules([]*share.ScanModule{nv}, []pkg.Package{p})
 			require.Len(t, out, 1)
 			assert.Equal(t, "nvname", out[0].Name)
@@ -240,6 +254,70 @@ func TestMergeSyftModulesJarFile(t *testing.T) {
 	out = mergeSyftModules([]*share.ScanModule{newNV("php")}, []pkg.Package{p})
 	require.Len(t, out, 2)
 	assert.Empty(t, out[0].Purl)
+}
+
+func jarLocPkg(purl, version string, locs ...file.Location) pkg.Package {
+	p := sp("x", version, pkg.JavaPkg, purl, "Apache-2.0")
+	p.Locations = file.NewLocationSet(locs...)
+	return p
+}
+
+func TestMergeSyftModulesJarLocations(t *testing.T) {
+	// nested package sorted before the outer one must not take the outer NV module
+	outerNV := &share.ScanModule{Name: "app", Version: "1.0", Source: "jar", File: "app-1.0.jar"}
+	nl := file.NewLocation("/app-1.0.jar")
+	nl.AccessPath = "/app-1.0.jar:BOOT-INF/lib/app-common-1.0.jar"
+	nested := jarLocPkg("pkg:maven/g/app-common@1.0", "1.0", nl)
+	outer := jarLocPkg("pkg:maven/g/app@1.0", "1.0", file.NewLocation("/app-1.0.jar"))
+	out := mergeSyftModules([]*share.ScanModule{outerNV}, []pkg.Package{nested, outer})
+	require.Len(t, out, 2)
+	assert.Equal(t, "pkg:maven/g/app@1.0", out[0].Purl)
+	assert.Equal(t, "pkg:maven/g/app-common@1.0", out[1].Purl)
+
+	// one package, two locations, two NV modules
+	a := &share.ScanModule{Name: "a", Version: "1", Source: "jar", File: "a/x.jar"}
+	b := &share.ScanModule{Name: "b", Version: "1", Source: "jar", File: "b/x.jar"}
+	p := jarLocPkg("pkg:maven/g/x@1", "1", file.NewLocation("/a/x.jar"), file.NewLocation("/b/x.jar"))
+	out = mergeSyftModules([]*share.ScanModule{a, b}, []pkg.Package{p})
+	require.Len(t, out, 2)
+	for _, m := range out {
+		assert.Equal(t, "pkg:maven/g/x@1", m.Purl)
+		assert.Equal(t, []string{"Apache-2.0"}, m.Licenses)
+	}
+
+	// heuristic NV purl is replaced by Syft's
+	h := &share.ScanModule{Name: "core", Version: "2.14.1", Source: "jar", File: "app/lib/log4j-core-2.14.1.jar",
+		Purl: "pkg:maven/org.apache.logging.log4j/core@2.14.1", Vuls: []*share.ScanModuleVul{{Name: "CVE-1"}}}
+	lp := "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1"
+	out = mergeSyftModules([]*share.ScanModule{h}, []pkg.Package{jarLocPkg(lp, "2.14.1", file.NewLocation("/app/lib/log4j-core-2.14.1.jar"))})
+	require.Len(t, out, 1)
+	assert.Equal(t, "core", out[0].Name)
+	assert.Len(t, out[0].Vuls, 1)
+	assert.Equal(t, lp, out[0].Purl)
+	assert.Equal(t, []string{"Apache-2.0"}, out[0].Licenses)
+}
+
+func TestMergeSyftModulesShadedJar(t *testing.T) {
+	// one jar file, two Syft packages of the same version (shaded): no file matching
+	pom := &share.ScanModule{Name: "io.netty:netty-all", Version: "4.1", Source: "jar", File: "lib/netty-all.jar", Purl: "pkg:maven/io.netty/netty-all@4.1"}
+	mf := &share.ScanModule{Name: "io.netty:Netty All", Version: "4.1", Source: "jar", File: "lib/netty-all.jar"}
+	loc := file.NewLocation("/lib/netty-all.jar")
+	all := jarLocPkg("pkg:maven/io.netty/netty-all@4.1", "4.1", loc)
+	buf := jarLocPkg("pkg:maven/io.netty/netty-buffer@4.1", "4.1", loc)
+	out := mergeSyftModules([]*share.ScanModule{pom, mf}, []pkg.Package{buf, all})
+	require.Len(t, out, 3)
+	assert.Equal(t, "pkg:maven/io.netty/netty-all@4.1", pom.Purl)
+	assert.Empty(t, mf.Purl)
+	assert.Equal(t, "syft", out[2].Origin)
+	assert.Equal(t, "pkg:maven/io.netty/netty-buffer@4.1", out[2].Purl)
+
+	// a module whose purl matches another Syft package is never moved by file
+	other := &share.ScanModule{Name: "g:b", Version: "1", Source: "jar", File: "x.jar", Purl: "pkg:maven/g/b@1"}
+	pa := jarLocPkg("pkg:maven/g/a@1", "1", file.NewLocation("/x.jar"))
+	pb := jarLocPkg("pkg:maven/g/b@1", "1", file.NewLocation("/y.jar"))
+	out = mergeSyftModules([]*share.ScanModule{other}, []pkg.Package{pa, pb})
+	require.Len(t, out, 2)
+	assert.Equal(t, "pkg:maven/g/b@1", other.Purl)
 }
 
 func TestSyftLicensesPreferSPDX(t *testing.T) {

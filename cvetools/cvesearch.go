@@ -528,8 +528,9 @@ func (cv *ScanTools) ScanImage(ctx context.Context, req *share.ScanImageRequest,
 	}
 
 	var syftCh <-chan []pkg.Package
+	var syftDeadline time.Time
 	if syftEnabled(bFromRawData) {
-		syftCh = startSyft(ctx, imgPath, fileMap)
+		syftCh, syftDeadline = startSyft(ctx, imgPath, fileMap)
 	}
 
 	// parallel scanning: cve and secrets
@@ -666,7 +667,7 @@ func (cv *ScanTools) ScanImage(ctx context.Context, req *share.ScanImageRequest,
 		result.Modules = feature2Module("", nil, apps)
 	}
 	if syftCh != nil {
-		result.Modules = mergeSyftModules(result.Modules, <-syftCh)
+		result.Modules = mergeSyftModules(result.Modules, waitSyft(syftCh, syftDeadline))
 	}
 	result.Error = serr
 	result.Vuls = vuls

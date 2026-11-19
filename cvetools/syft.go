@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,13 +28,19 @@ var syftTimeout = 300 * time.Second
 
 // syftEnabled reports whether Syft runs for this scan. The env var is used because
 // the scanner forks the scannerTask process, which inherits the environment.
+// SCANNER_DISABLE_SYFT takes the values of strconv.ParseBool; an invalid value keeps Syft on.
 func syftEnabled(fromRawData bool) bool {
 	if !fromRawData {
 		log.Debug("syft skipped: layer cacher is enabled")
 		return false
 	}
-	if v, err := strconv.ParseBool(os.Getenv("SCANNER_DISABLE_SYFT")); err == nil && v {
-		return false
+	if env := os.Getenv("SCANNER_DISABLE_SYFT"); env != "" {
+		v, err := strconv.ParseBool(env)
+		if err != nil {
+			log.WithFields(log.Fields{"value": env}).Warn("invalid SCANNER_DISABLE_SYFT, syft stays enabled")
+		} else if v {
+			return false
+		}
 	}
 	return true
 }
@@ -123,25 +130,52 @@ func syftPackages(ctx context.Context, root string) (res []pkg.Package) {
 	return pkgs
 }
 
-// startSyft builds the tree under imgPath and runs Syft in the background.
-// The result channel is nil when Syft is skipped.
-func startSyft(ctx context.Context, imgPath string, fileMap map[string]string) <-chan []pkg.Package {
+// startSyft creates a temp dir under imgPath and runs buildSyftTree and Syft in the background.
+// The result channel is nil when Syft is skipped. Use waitSyft with the returned deadline.
+func startSyft(ctx context.Context, imgPath string, fileMap map[string]string) (<-chan []pkg.Package, time.Time) {
 	dir, err := os.MkdirTemp(imgPath, "syft-")
 	if err != nil {
 		log.WithFields(log.Fields{"error": err}).Warn("syft skipped")
-		return nil
+		return nil, time.Time{}
 	}
-	if err := buildSyftTree(fileMap, dir); err != nil {
-		log.WithFields(log.Fields{"error": err}).Warn("syft skipped")
-		os.RemoveAll(dir)
-		return nil
-	}
-	ch := make(chan []pkg.Package, 1)
+	ch := make(chan []pkg.Package, 1) // buffered: the goroutine never blocks, even if nobody waits
 	go func() {
 		defer os.RemoveAll(dir)
+		if err := buildSyftTree(fileMap, dir); err != nil {
+			log.WithFields(log.Fields{"error": err}).Warn("syft skipped")
+			ch <- nil
+			return
+		}
 		ch <- syftPackages(ctx, dir)
 	}()
-	return ch
+	return ch, time.Now().Add(syftTimeout + 10*time.Second)
+}
+
+// waitSyft waits for the Syft result until deadline. Catalogers can ignore ctx, so the wait is bounded.
+func waitSyft(ch <-chan []pkg.Package, deadline time.Time) []pkg.Package {
+	t := time.NewTimer(time.Until(deadline))
+	defer t.Stop()
+	select {
+	case pkgs := <-ch:
+		return pkgs
+	case <-t.C:
+		log.Warn("syft result not ready, skipped")
+		return nil
+	}
+}
+
+// javaFiles returns the unique in-image paths of a Syft package. AccessPath only: nested jars
+// keep RealPath = outer jar and AccessPath = "outer:inner", like NeuVector's File.
+func javaFiles(p pkg.Package) []string {
+	var out []string
+	for _, l := range p.Locations.ToSlice() {
+		f := l.AccessPath
+		if f == "" {
+			f = l.RealPath
+		}
+		out = appendUnique(out, f)
+	}
+	return out
 }
 
 func syftLicenses(p pkg.Package) []string {
@@ -186,7 +220,7 @@ func apkNamespace(key string) (string, bool) {
 func mergeSyftModules(modules []*share.ScanModule, pkgs []pkg.Package) []*share.ScanModule {
 	nv := make(map[string][]*share.ScanModule)
 	apkOrigin := make(map[string][]*share.ScanModule) // NV folds apk subpackages into the origin module
-	jarFile := make(map[string][]*share.ScanModule)   // jar modules without Purl, by file+version
+	jarFile := make(map[string][]*share.ScanModule)   // jar modules by file+version
 	for _, m := range modules {
 		if k := scanUtils.PurlMergeKey(m.Purl); k != "" {
 			nv[k] = append(nv[k], m)
@@ -194,9 +228,24 @@ func mergeSyftModules(modules []*share.ScanModule, pkgs []pkg.Package) []*share.
 				ak := "apk/" + ns + "/" + strings.ToLower(m.Name) + "@" + m.Version
 				apkOrigin[ak] = append(apkOrigin[ak], m)
 			}
-		} else if m.Source == "jar" && m.Purl == "" {
+		}
+		if m.Source == "jar" {
 			fk := "/" + m.File + "@" + m.Version
 			jarFile[fk] = append(jarFile[fk], m)
+		}
+	}
+	// jar file matching is used only when the file has exactly one Syft package of that version
+	// (shaded jars have several), and never moves a module whose own purl matches a Syft package.
+	syftKeys := make(map[string]bool)
+	jarSyft := make(map[string]int)
+	for _, p := range pkgs {
+		if k := scanUtils.PurlMergeKey(p.PURL); k != "" {
+			syftKeys[k] = true
+		}
+		if p.Type == pkg.JavaPkg {
+			for _, f := range javaFiles(p) {
+				jarSyft[f+"@"+p.Version]++
+			}
 		}
 	}
 	added := make(map[string]*share.ScanModule)
@@ -217,19 +266,23 @@ func mergeSyftModules(modules []*share.ScanModule, pkgs []pkg.Package) []*share.
 				}
 			}
 		}
-		if !ok && p.Type == pkg.JavaPkg {
-			for _, l := range p.Locations.ToSlice() {
-				for _, f := range []string{l.RealPath, l.AccessPath} {
-					if jm := jarFile[f+"@"+p.Version]; len(jm) > 0 {
-						for _, m := range jm {
-							m.Purl = p.PURL
-						}
-						ms, ok = jm, true
-						nv[key] = append(nv[key], jm...) // same jar at another path merges by key
-						delete(jarFile, f+"@"+p.Version)
+		if p.Type == pkg.JavaPkg {
+			for _, f := range javaFiles(p) {
+				if jarSyft[f+"@"+p.Version] != 1 {
+					continue
+				}
+				for _, m := range jarFile[f+"@"+p.Version] {
+					if mk := scanUtils.PurlMergeKey(m.Purl); mk != key && syftKeys[mk] {
+						continue
+					}
+					m.Purl = p.PURL // Syft reads pom, manifest and file name; NV has none or a heuristic one
+					if !slices.Contains(nv[key], m) {
+						nv[key] = append(nv[key], m)
 					}
 				}
 			}
+			ms = nv[key]
+			ok = len(ms) > 0
 		}
 		if ok {
 			matched++
