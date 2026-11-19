@@ -39,6 +39,9 @@ type FeatureVersion struct {
 	ModuleVuls []ModuleVul
 	CPEs       utils.Set
 	InBase     bool
+	// name/version for purl only when they differ from Package/Version; never used for CVE matching
+	PurlName    string
+	PurlVersion string
 }
 
 type AppFeatureVersion struct {
@@ -103,6 +106,7 @@ func detectAPK(namespace string, files map[string]*FeatureFile, path string) ([]
 	packagesMap := make(map[string]FeatureVersion)
 
 	var pkg FeatureVersion
+	var binName string
 	var err error
 	scanner := bufio.NewScanner(bytes.NewReader(f.Data))
 	for scanner.Scan() {
@@ -110,6 +114,7 @@ func detectAPK(namespace string, files map[string]*FeatureFile, path string) ([]
 		if len(line) > 3 {
 			if line[0] == 'P' && line[1] == ':' {
 				pkg.Package = strings.TrimPrefix(line, "P:")
+				binName = pkg.Package
 			} else if line[0] == 'V' && line[1] == ':' {
 				pkg.Version, err = utils.NewVersion(strings.TrimPrefix(line, "V:"))
 				if err != nil {
@@ -123,9 +128,16 @@ func detectAPK(namespace string, files map[string]*FeatureFile, path string) ([]
 		if line == "" {
 			if pkg.Package != "" && pkg.Version.String() != "" {
 				pkg.InBase = f.InBase
-				packagesMap[pkg.Package+"#"+pkg.Version.String()] = pkg
-				pkg.Package = ""
-				pkg.Version = utils.Version{}
+				key := pkg.Package + "#" + pkg.Version.String()
+				if pkg.Package != binName {
+					pkg.PurlName = binName
+				}
+				// several binaries share one origin: keep the one named like the origin, else the first seen
+				if old, ok := packagesMap[key]; !ok || (old.PurlName != "" && pkg.PurlName == "") {
+					packagesMap[key] = pkg
+				}
+				pkg = FeatureVersion{}
+				binName = ""
 			}
 		}
 	}
@@ -157,6 +169,7 @@ type dpkgPackage struct {
 	status  string
 	source  string
 	version string
+	binVer  string // raw Version: line, used for purl only
 }
 
 func addDPKGFeature(packagesMap map[string]FeatureVersion, pkg *dpkgPackage, inBase bool, installed bool) {
@@ -176,6 +189,9 @@ func addDPKGFeature(packagesMap map[string]FeatureVersion, pkg *dpkgPackage, inB
 			Package: name,
 			Version: ver,
 			InBase:  inBase,
+		}
+		if pkg.binVer != pkg.version {
+			fv.PurlVersion = pkg.binVer
 		}
 
 		/*
@@ -221,18 +237,21 @@ func parseDPKGFeatureFile(packagesMap map[string]FeatureVersion, f string, inBas
 				}
 				pkg.version = ver.String()
 			}
-		} else if strings.HasPrefix(line, "Version: ") && pkg.version == "" {
+		} else if strings.HasPrefix(line, "Version: ") {
 			// Version line
 			// Defines the version of the package
 			// This version is less important than a version retrieved from a Source line
 			// because the Debian vulnerabilities often skips the epoch from the Version field
 			// which is not present in the Source version, and because +bX revisions don't matter
 			sver := strings.TrimPrefix(line, "Version: ")
-			ver, err := utils.NewVersion(sver)
-			if err != nil {
-				log.Warningf("could not parse package version '%c': %s. skipping", line[1], err.Error())
+			pkg.binVer = strings.TrimSpace(sver)
+			if pkg.version == "" {
+				ver, err := utils.NewVersion(sver)
+				if err != nil {
+					log.Warningf("could not parse package version '%c': %s. skipping", line[1], err.Error())
+				}
+				pkg.version = ver.String()
 			}
-			pkg.version = ver.String()
 		} else if line == "" {
 			addDPKGFeature(packagesMap, &pkg, inBase, installed)
 			pkg = dpkgPackage{}

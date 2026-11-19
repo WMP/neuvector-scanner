@@ -1588,6 +1588,18 @@ func feature2Module(namespace string, features []detectors.FeatureVersion, apps 
 				j++
 			}
 		}
+		if f.PurlName != "" || f.PurlVersion != "" {
+			pm := &share.ScanModule{Name: m.Name, Version: m.Version, Source: namespace}
+			if f.PurlName != "" {
+				pm.Name = f.PurlName
+			}
+			if f.PurlVersion != "" {
+				pm.Version = f.PurlVersion
+			}
+			m.Purl = scan.ModulePurl(pm, "")
+		} else {
+			m.Purl = scan.ModulePurl(m, "")
+		}
 		modules = append(modules, m)
 	}
 
@@ -1597,6 +1609,7 @@ func feature2Module(namespace string, features []detectors.FeatureVersion, apps 
 			cve := &share.ScanModuleVul{Name: mv.Name, Status: mv.Status}
 			m.Vuls = append(m.Vuls, cve)
 		}
+		m.Purl = scan.ModulePurl(m, "")
 		modules = append(modules, m)
 	}
 
